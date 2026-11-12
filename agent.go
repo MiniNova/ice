@@ -137,7 +137,8 @@ type Agent struct {
 	buf *packetio.Buffer
 
 	// LRU of outbound Binding request Transaction IDs
-	pendingBindingRequests []bindingRequest
+	pendingBindingRequestsMu sync.Mutex
+	pendingBindingRequests   []bindingRequest
 
 	// Address rewrite (1:1) IP mapping
 	addressRewriteMapper *addressRewriteMapper
@@ -759,7 +760,9 @@ func (a *Agent) updateConnectionState(newState ConnectionState) {
 			a.removeUfragFromMux()
 			a.checklist = make([]*CandidatePair, 0)
 			a.pairsByID = make(map[uint64]*CandidatePair)
-			a.pendingBindingRequests = make([]bindingRequest, 0)
+			a.pendingBindingRequestsMu.Lock()
+		a.pendingBindingRequests = make([]bindingRequest, 0)
+		a.pendingBindingRequestsMu.Unlock()
 			a.setSelectedPair(nil)
 			a.deleteAllCandidates()
 		}
@@ -1690,6 +1693,7 @@ func (a *Agent) sendBindingRequest(msg *stun.Message, local, remote Candidate) {
 		nominationValue = &nomination.Value
 	}
 
+	a.pendingBindingRequestsMu.Lock()
 	a.invalidatePendingBindingRequests(time.Now())
 	a.pendingBindingRequests = append(a.pendingBindingRequests, bindingRequest{
 		timestamp:       time.Now(),
@@ -1700,6 +1704,7 @@ func (a *Agent) sendBindingRequest(msg *stun.Message, local, remote Candidate) {
 		isUseCandidate:  msg.Contains(stun.AttrUseCandidate),
 		nominationValue: nominationValue,
 	})
+	a.pendingBindingRequestsMu.Unlock()
 
 	if pair := a.findPair(local, remote); pair != nil {
 		pair.UpdateRequestSent()
@@ -1767,6 +1772,8 @@ func (a *Agent) invalidatePendingBindingRequests(filterTime time.Time) {
 // Assert that the passed TransactionID is in our pendingBindingRequests and returns the destination
 // If the bindingRequest was valid remove it from our pending cache.
 func (a *Agent) handleInboundBindingSuccess(id [stun.TransactionIDSize]byte) (bool, *bindingRequest, time.Duration) {
+	a.pendingBindingRequestsMu.Lock()
+	defer a.pendingBindingRequestsMu.Unlock()
 	a.invalidatePendingBindingRequests(time.Now())
 	for i := range a.pendingBindingRequests {
 		if a.pendingBindingRequests[i].transactionID == id {
@@ -2171,7 +2178,9 @@ func (a *Agent) Restart(ufrag, pwd string) error { //nolint:cyclop
 		a.remoteCandidateGeneration++
 		a.checklist = make([]*CandidatePair, 0)
 		a.pairsByID = make(map[uint64]*CandidatePair)
+		a.pendingBindingRequestsMu.Lock()
 		a.pendingBindingRequests = make([]bindingRequest, 0)
+		a.pendingBindingRequestsMu.Unlock()
 		a.setSelectedPair(nil)
 		a.deleteAllCandidates()
 		a.setSelector()
